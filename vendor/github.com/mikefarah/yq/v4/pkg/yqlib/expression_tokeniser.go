@@ -166,6 +166,20 @@ func numberValue() lex.Action {
 	}
 }
 
+func hexValue() lex.Action {
+	return func(s *lex.Scanner, m *machines.Match) (interface{}, error) {
+		var originalString = string(m.Bytes)
+		var numberString = originalString[2:]
+		log.Debugf("numberString: %v", numberString)
+		var number, errParsingInt = strconv.ParseInt(numberString, 16, 64) // nolint
+		if errParsingInt != nil {
+			return nil, errParsingInt
+		}
+
+		return &token{TokenType: operationToken, Operation: createValueOperation(number, originalString)}, nil
+	}
+}
+
 func floatValue() lex.Action {
 	return func(s *lex.Scanner, m *machines.Match) (interface{}, error) {
 		var numberString = string(m.Bytes)
@@ -284,6 +298,7 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`any_c`), opToken(anyConditionOpType))
 	lexer.Add([]byte(`all`), opToken(allOpType))
 	lexer.Add([]byte(`all_c`), opToken(allConditionOpType))
+	lexer.Add([]byte(`contains`), opToken(containsOpType))
 
 	lexer.Add([]byte(`split`), opToken(splitStringOpType))
 	lexer.Add([]byte(`keys`), opToken(keysOpType))
@@ -300,6 +315,8 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`to_entries`), opToken(toEntriesOpType))
 	lexer.Add([]byte(`from_entries`), opToken(fromEntriesOpType))
 	lexer.Add([]byte(`with_entries`), opToken(withEntriesOpType))
+
+	lexer.Add([]byte(`with`), opToken(withOpType))
 
 	lexer.Add([]byte(`lineComment`), opTokenWithPrefs(getCommentOpType, assignCommentOpType, commentOpPreferences{LineComment: true}))
 
@@ -323,11 +340,12 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte("( |\t|\n|\r)+"), skip)
 
 	lexer.Add([]byte(`\."[^ "]+"\??`), pathToken(true))
-	lexer.Add([]byte(`\.[^ \}\{\:\[\],\|\.\[\(\)=\n]+\??`), pathToken(false))
+	lexer.Add([]byte(`\.[^ ;\}\{\:\[\],\|\.\[\(\)=\n]+\??`), pathToken(false))
 	lexer.Add([]byte(`\.`), selfToken())
 
 	lexer.Add([]byte(`\|`), opToken(pipeOpType))
 
+	lexer.Add([]byte(`0[xX][0-9A-Fa-f]+`), hexValue())
 	lexer.Add([]byte(`-?\d+(\.\d+)`), floatValue())
 	lexer.Add([]byte(`-?[1-9](\.\d+)?[Ee][-+]?\d+`), floatValue())
 	lexer.Add([]byte(`-?\d+`), numberValue())
@@ -352,7 +370,8 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`\-`), opToken(subtractOpType))
 	lexer.Add([]byte(`\-=`), opToken(subtractAssignOpType))
 	lexer.Add([]byte(`\$[a-zA-Z_-0-9]+`), getVariableOpToken())
-	lexer.Add([]byte(`as`), opToken(assignVariableOpType))
+	lexer.Add([]byte(`as`), opTokenWithPrefs(assignVariableOpType, nil, assignVarPreferences{}))
+	lexer.Add([]byte(`ref`), opTokenWithPrefs(assignVariableOpType, nil, assignVarPreferences{IsReference: true}))
 
 	err := lexer.CompileNFA()
 	if err != nil {
