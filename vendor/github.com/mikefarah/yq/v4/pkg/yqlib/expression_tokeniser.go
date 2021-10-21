@@ -111,6 +111,7 @@ func multiplyWithPrefs() lex.Action {
 		if strings.Contains(options, "d") {
 			prefs.DeepMergeArrays = true
 		}
+		prefs.TraversePrefs.DontFollowAlias = true
 		op := &Operation{OperationType: multiplyOpType, Value: multiplyOpType.Type, StringValue: options, Preferences: prefs}
 		return &token{TokenType: operationToken, Operation: op}, nil
 	}
@@ -163,6 +164,20 @@ func numberValue() lex.Action {
 		}
 
 		return &token{TokenType: operationToken, Operation: createValueOperation(number, numberString)}, nil
+	}
+}
+
+func hexValue() lex.Action {
+	return func(s *lex.Scanner, m *machines.Match) (interface{}, error) {
+		var originalString = string(m.Bytes)
+		var numberString = originalString[2:]
+		log.Debugf("numberString: %v", numberString)
+		var number, errParsingInt = strconv.ParseInt(numberString, 16, 64) // nolint
+		if errParsingInt != nil {
+			return nil, errParsingInt
+		}
+
+		return &token{TokenType: operationToken, Operation: createValueOperation(number, originalString)}, nil
 	}
 }
 
@@ -284,6 +299,7 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`any_c`), opToken(anyConditionOpType))
 	lexer.Add([]byte(`all`), opToken(allOpType))
 	lexer.Add([]byte(`all_c`), opToken(allConditionOpType))
+	lexer.Add([]byte(`contains`), opToken(containsOpType))
 
 	lexer.Add([]byte(`split`), opToken(splitStringOpType))
 	lexer.Add([]byte(`keys`), opToken(keysOpType))
@@ -300,6 +316,8 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`to_entries`), opToken(toEntriesOpType))
 	lexer.Add([]byte(`from_entries`), opToken(fromEntriesOpType))
 	lexer.Add([]byte(`with_entries`), opToken(withEntriesOpType))
+
+	lexer.Add([]byte(`with`), opToken(withOpType))
 
 	lexer.Add([]byte(`lineComment`), opTokenWithPrefs(getCommentOpType, assignCommentOpType, commentOpPreferences{LineComment: true}))
 
@@ -323,11 +341,12 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte("( |\t|\n|\r)+"), skip)
 
 	lexer.Add([]byte(`\."[^ "]+"\??`), pathToken(true))
-	lexer.Add([]byte(`\.[^ \}\{\:\[\],\|\.\[\(\)=\n]+\??`), pathToken(false))
+	lexer.Add([]byte(`\.[^ ;\}\{\:\[\],\|\.\[\(\)=\n]+\??`), pathToken(false))
 	lexer.Add([]byte(`\.`), selfToken())
 
 	lexer.Add([]byte(`\|`), opToken(pipeOpType))
 
+	lexer.Add([]byte(`0[xX][0-9A-Fa-f]+`), hexValue())
 	lexer.Add([]byte(`-?\d+(\.\d+)`), floatValue())
 	lexer.Add([]byte(`-?[1-9](\.\d+)?[Ee][-+]?\d+`), floatValue())
 	lexer.Add([]byte(`-?\d+`), numberValue())
@@ -352,7 +371,8 @@ func initLexer() (*lex.Lexer, error) {
 	lexer.Add([]byte(`\-`), opToken(subtractOpType))
 	lexer.Add([]byte(`\-=`), opToken(subtractAssignOpType))
 	lexer.Add([]byte(`\$[a-zA-Z_-0-9]+`), getVariableOpToken())
-	lexer.Add([]byte(`as`), opToken(assignVariableOpType))
+	lexer.Add([]byte(`as`), opTokenWithPrefs(assignVariableOpType, nil, assignVarPreferences{}))
+	lexer.Add([]byte(`ref`), opTokenWithPrefs(assignVariableOpType, nil, assignVarPreferences{IsReference: true}))
 
 	err := lexer.CompileNFA()
 	if err != nil {
@@ -417,17 +437,16 @@ func (p *expressionTokeniserImpl) handleToken(tokens []*token, index int, postPr
 	log.Debug("processing %v", currentToken.toString(true))
 
 	if currentToken.TokenType == traverseArrayCollect {
+		// `.[exp]`` works by creating a traversal array of [self, exp] and piping that into the traverse array operator
 		//need to put a traverse array then a collect currentToken
 		// do this by adding traverse then converting currentToken to collect
 
-		if index == 0 || tokens[index-1].TokenType != operationToken ||
-			tokens[index-1].Operation.OperationType != traversePathOpType {
-			log.Debug("  adding self")
-			op := &Operation{OperationType: selfReferenceOpType, StringValue: "SELF"}
-			postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
-		}
+		log.Debug("  adding self")
+		op := &Operation{OperationType: selfReferenceOpType, StringValue: "SELF"}
+		postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
+
 		log.Debug("  adding traverse array")
-		op := &Operation{OperationType: traverseArrayOpType, StringValue: "TRAVERSE_ARRAY"}
+		op = &Operation{OperationType: traverseArrayOpType, StringValue: "TRAVERSE_ARRAY"}
 		postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
 
 		currentToken = &token{TokenType: openCollect}
@@ -455,20 +474,15 @@ func (p *expressionTokeniserImpl) handleToken(tokens []*token, index int, postPr
 	}
 
 	if index != len(tokens)-1 && currentToken.CheckForPostTraverse &&
-		tokens[index+1].TokenType == operationToken &&
-		tokens[index+1].Operation.OperationType == traversePathOpType {
+		((tokens[index+1].TokenType == operationToken && (tokens[index+1].Operation.OperationType == traversePathOpType)) ||
+			(tokens[index+1].TokenType == traverseArrayCollect)) {
 		log.Debug("  adding pipe because the next thing is traverse")
-		op := &Operation{OperationType: shortPipeOpType, Value: "PIPE"}
+		op := &Operation{OperationType: shortPipeOpType, Value: "PIPE", StringValue: "."}
 		postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
 	}
 	if index != len(tokens)-1 && currentToken.CheckForPostTraverse &&
 		tokens[index+1].TokenType == openCollect {
 
-		// if tokens[index].TokenType == closeCollect {
-		// 	log.Debug("  adding pipe because next is opencollect")
-		// 	op := &Operation{OperationType: shortPipeOpType, Value: "PIPE"}
-		// 	postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
-		// }
 		log.Debug("  adding traverArray because next is opencollect")
 		op := &Operation{OperationType: traverseArrayOpType}
 		postProcessedTokens = append(postProcessedTokens, &token{TokenType: operationToken, Operation: op})
