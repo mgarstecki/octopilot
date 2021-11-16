@@ -2,8 +2,10 @@ package yqlib
 
 import (
 	"container/list"
+	"fmt"
 
 	"github.com/jinzhu/copier"
+	logging "gopkg.in/op/go-logging.v1"
 )
 
 type Context struct {
@@ -41,19 +43,52 @@ func (n *Context) SetVariable(name string, value *list.List) {
 }
 
 func (n *Context) ChildContext(results *list.List) Context {
+	clone := Context{DontAutoCreate: n.DontAutoCreate}
+	clone.Variables = make(map[string]*list.List)
+	if len(n.Variables) > 0 {
+		err := copier.Copy(&clone.Variables, n.Variables)
+		if err != nil {
+			log.Error("Error cloning context :(")
+			panic(err)
+		}
+	}
+	clone.MatchingNodes = results
+	return clone
+}
+
+func (n *Context) ToString() string {
+	if !log.IsEnabledFor(logging.DEBUG) {
+		return ""
+	}
+	result := fmt.Sprintf("Context\nDontAutoCreate: %v\n", n.DontAutoCreate)
+	return result + NodesToString(n.MatchingNodes)
+}
+
+func (n *Context) DeepClone() Context {
 	clone := Context{}
 	err := copier.Copy(&clone, n)
+	// copier doesn't do lists properly for some reason
+	clone.MatchingNodes = list.New()
+	for el := n.MatchingNodes.Front(); el != nil; el = el.Next() {
+		clonedNode, err := el.Value.(*CandidateNode).Copy()
+		if err != nil {
+			log.Error("Error cloning context :(")
+			panic(err)
+		}
+		clone.MatchingNodes.PushBack(clonedNode)
+	}
+
 	if err != nil {
 		log.Error("Error cloning context :(")
 		panic(err)
 	}
-	clone.MatchingNodes = results
 	return clone
 }
 
 func (n *Context) Clone() Context {
 	clone := Context{}
 	err := copier.Copy(&clone, n)
+
 	if err != nil {
 		log.Error("Error cloning context :(")
 		panic(err)
