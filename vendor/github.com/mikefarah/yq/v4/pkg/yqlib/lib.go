@@ -6,12 +6,19 @@ import (
 	"bytes"
 	"container/list"
 	"fmt"
+	"strconv"
+	"strings"
 
 	logging "gopkg.in/op/go-logging.v1"
 	yaml "gopkg.in/yaml.v3"
 )
 
 var log = logging.MustGetLogger("yq-lib")
+
+// GetLogger returns the yq logger instance.
+func GetLogger() *logging.Logger {
+	return log
+}
 
 type operationType struct {
 	Type       string
@@ -56,10 +63,15 @@ var createMapOpType = &operationType{Type: "CREATE_MAP", NumArgs: 2, Precedence:
 var shortPipeOpType = &operationType{Type: "SHORT_PIPE", NumArgs: 2, Precedence: 45, Handler: pipeOperator}
 
 var lengthOpType = &operationType{Type: "LENGTH", NumArgs: 0, Precedence: 50, Handler: lengthOperator}
-var collectOpType = &operationType{Type: "COLLECT", NumArgs: 0, Precedence: 50, Handler: collectOperator}
+var collectOpType = &operationType{Type: "COLLECT", NumArgs: 1, Precedence: 50, Handler: collectOperator}
+var mapOpType = &operationType{Type: "MAP", NumArgs: 1, Precedence: 50, Handler: mapOperator}
+var mapValuesOpType = &operationType{Type: "MAP_VALUES", NumArgs: 1, Precedence: 50, Handler: mapValuesOperator}
+var encodeOpType = &operationType{Type: "ENCODE", NumArgs: 0, Precedence: 50, Handler: encodeOperator}
+var decodeOpType = &operationType{Type: "DECODE", NumArgs: 0, Precedence: 50, Handler: decodeOperator}
 
 var anyOpType = &operationType{Type: "ANY", NumArgs: 0, Precedence: 50, Handler: anyOperator}
 var allOpType = &operationType{Type: "ALL", NumArgs: 0, Precedence: 50, Handler: allOperator}
+var containsOpType = &operationType{Type: "CONTAINS", NumArgs: 1, Precedence: 50, Handler: containsOperator}
 var anyConditionOpType = &operationType{Type: "ANY_CONDITION", NumArgs: 1, Precedence: 50, Handler: anyOperator}
 var allConditionOpType = &operationType{Type: "ALL_CONDITION", NumArgs: 1, Precedence: 50, Handler: allOperator}
 
@@ -67,10 +79,16 @@ var toEntriesOpType = &operationType{Type: "TO_ENTRIES", NumArgs: 0, Precedence:
 var fromEntriesOpType = &operationType{Type: "FROM_ENTRIES", NumArgs: 0, Precedence: 50, Handler: fromEntriesOperator}
 var withEntriesOpType = &operationType{Type: "WITH_ENTRIES", NumArgs: 1, Precedence: 50, Handler: withEntriesOperator}
 
+var withOpType = &operationType{Type: "WITH", NumArgs: 1, Precedence: 50, Handler: withOperator}
+
 var splitDocumentOpType = &operationType{Type: "SPLIT_DOC", NumArgs: 0, Precedence: 50, Handler: splitDocumentOperator}
 var getVariableOpType = &operationType{Type: "GET_VARIABLE", NumArgs: 0, Precedence: 55, Handler: getVariableOperator}
 var getStyleOpType = &operationType{Type: "GET_STYLE", NumArgs: 0, Precedence: 50, Handler: getStyleOperator}
 var getTagOpType = &operationType{Type: "GET_TAG", NumArgs: 0, Precedence: 50, Handler: getTagOperator}
+
+var getKeyOpType = &operationType{Type: "GET_KEY", NumArgs: 0, Precedence: 50, Handler: getKeyOperator}
+var getParentOpType = &operationType{Type: "GET_PARENT", NumArgs: 0, Precedence: 50, Handler: getParentOperator}
+
 var getCommentOpType = &operationType{Type: "GET_COMMENT", NumArgs: 0, Precedence: 50, Handler: getCommentsOperator}
 var getAnchorOpType = &operationType{Type: "GET_ANCHOR", NumArgs: 0, Precedence: 50, Handler: getAnchorOperator}
 var getAliasOptype = &operationType{Type: "GET_ALIAS", NumArgs: 0, Precedence: 50, Handler: getAliasOperator}
@@ -80,6 +98,8 @@ var getFileIndexOpType = &operationType{Type: "GET_FILE_INDEX", NumArgs: 0, Prec
 var getPathOpType = &operationType{Type: "GET_PATH", NumArgs: 0, Precedence: 50, Handler: getPathOperator}
 
 var explodeOpType = &operationType{Type: "EXPLODE", NumArgs: 1, Precedence: 50, Handler: explodeOperator}
+var sortByOpType = &operationType{Type: "SORT_BY", NumArgs: 1, Precedence: 50, Handler: sortByOperator}
+var sortOpType = &operationType{Type: "SORT", NumArgs: 0, Precedence: 50, Handler: sortOperator}
 var sortKeysOpType = &operationType{Type: "SORT_KEYS", NumArgs: 1, Precedence: 50, Handler: sortKeysOperator}
 var joinStringOpType = &operationType{Type: "JOIN", NumArgs: 1, Precedence: 50, Handler: joinStringOperator}
 var subStringOpType = &operationType{Type: "SUBSTR", NumArgs: 1, Precedence: 50, Handler: substituteStringOperator}
@@ -87,6 +107,8 @@ var matchOpType = &operationType{Type: "MATCH", NumArgs: 1, Precedence: 50, Hand
 var captureOpType = &operationType{Type: "CAPTURE", NumArgs: 1, Precedence: 50, Handler: captureOperator}
 var testOpType = &operationType{Type: "TEST", NumArgs: 1, Precedence: 50, Handler: testOperator}
 var splitStringOpType = &operationType{Type: "SPLIT", NumArgs: 1, Precedence: 50, Handler: splitStringOperator}
+
+var loadOpType = &operationType{Type: "LOAD", NumArgs: 1, Precedence: 50, Handler: loadYamlOperator}
 
 var keysOpType = &operationType{Type: "KEYS", NumArgs: 0, Precedence: 50, Handler: keysOperator}
 
@@ -106,6 +128,8 @@ var selectOpType = &operationType{Type: "SELECT", NumArgs: 1, Precedence: 50, Ha
 var hasOpType = &operationType{Type: "HAS", NumArgs: 1, Precedence: 50, Handler: hasOperator}
 var uniqueOpType = &operationType{Type: "UNIQUE", NumArgs: 0, Precedence: 50, Handler: unique}
 var uniqueByOpType = &operationType{Type: "UNIQUE_BY", NumArgs: 1, Precedence: 50, Handler: uniqueBy}
+var groupByOpType = &operationType{Type: "GROUP_BY", NumArgs: 1, Precedence: 50, Handler: groupBy}
+var flattenOpType = &operationType{Type: "FLATTEN_BY", NumArgs: 0, Precedence: 50, Handler: flattenOp}
 var deleteChildOpType = &operationType{Type: "DELETE", NumArgs: 1, Precedence: 40, Handler: deleteChildOperator}
 
 type Operation struct {
@@ -115,6 +139,75 @@ type Operation struct {
 	CandidateNode *CandidateNode // used for Value Path elements
 	Preferences   interface{}
 	UpdateAssign  bool // used for assign ops, when true it means we evaluate the rhs given the lhs
+}
+
+func recurseNodeArrayEqual(lhs *yaml.Node, rhs *yaml.Node) bool {
+	if len(lhs.Content) != len(rhs.Content) {
+		return false
+	}
+
+	for index := 0; index < len(lhs.Content); index = index + 1 {
+		if !recursiveNodeEqual(lhs.Content[index], rhs.Content[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func findInArray(array *yaml.Node, item *yaml.Node) int {
+
+	for index := 0; index < len(array.Content); index = index + 1 {
+		if recursiveNodeEqual(array.Content[index], item) {
+			return index
+		}
+	}
+	return -1
+}
+
+func recurseNodeObjectEqual(lhs *yaml.Node, rhs *yaml.Node) bool {
+	if len(lhs.Content) != len(rhs.Content) {
+		return false
+	}
+
+	for index := 0; index < len(lhs.Content); index = index + 2 {
+		key := lhs.Content[index]
+		value := lhs.Content[index+1]
+
+		indexInRhs := findInArray(rhs, key)
+
+		if indexInRhs == -1 || !recursiveNodeEqual(value, rhs.Content[indexInRhs+1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func recursiveNodeEqual(lhs *yaml.Node, rhs *yaml.Node) bool {
+	if lhs.Kind != rhs.Kind || lhs.Tag != rhs.Tag {
+		return false
+	} else if lhs.Tag == "!!null" {
+		return true
+
+	} else if lhs.Kind == yaml.ScalarNode {
+		return lhs.Value == rhs.Value
+	} else if lhs.Kind == yaml.SequenceNode {
+		return recurseNodeArrayEqual(lhs, rhs)
+	} else if lhs.Kind == yaml.MappingNode {
+		return recurseNodeObjectEqual(lhs, rhs)
+	}
+	return false
+
+}
+
+// yaml numbers can be hex encoded...
+func parseInt(numberString string) (string, int64, error) {
+	if strings.HasPrefix(numberString, "0x") ||
+		strings.HasPrefix(numberString, "0X") {
+		num, err := strconv.ParseInt(numberString[2:], 16, 64) // nolint
+		return "0x%X", num, err
+	}
+	num, err := strconv.ParseInt(numberString, 10, 64) // nolint
+	return "%v", num, err
 }
 
 func createScalarNode(value interface{}, stringValue string) *yaml.Node {
@@ -149,6 +242,9 @@ func createValueOperation(value interface{}, stringValue string) *Operation {
 
 // debugging purposes only
 func (p *Operation) toString() string {
+	if p == nil {
+		return "OP IS NIL"
+	}
 	if p.OperationType == traversePathOpType {
 		return fmt.Sprintf("%v", p.Value)
 	} else if p.OperationType == selfReferenceOpType {
@@ -166,7 +262,7 @@ func NodesToString(collection *list.List) string {
 		return ""
 	}
 
-	result := ""
+	result := fmt.Sprintf("%v results\n", collection.Len())
 	for el := collection.Front(); el != nil; el = el.Next() {
 		result = result + "\n" + NodeToString(el.Value.(*CandidateNode))
 	}
