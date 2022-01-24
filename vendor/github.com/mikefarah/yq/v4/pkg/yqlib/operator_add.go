@@ -2,7 +2,6 @@ package yqlib
 
 import (
 	"fmt"
-
 	"strconv"
 
 	yaml "gopkg.in/yaml.v3"
@@ -45,14 +44,14 @@ func add(d *dataTreeNavigator, context Context, lhs *CandidateNode, rhs *Candida
 	lhsNode := lhs.Node
 
 	if lhsNode.Tag == "!!null" {
-		return lhs.CreateChild(nil, rhs.Node), nil
+		return lhs.CreateReplacement(rhs.Node), nil
 	}
 
-	target := lhs.CreateChild(nil, &yaml.Node{})
+	target := lhs.CreateReplacement(&yaml.Node{})
 
 	switch lhsNode.Kind {
 	case yaml.MappingNode:
-		return nil, fmt.Errorf("Maps not yet supported for addition")
+		return nil, fmt.Errorf("maps not yet supported for addition")
 	case yaml.SequenceNode:
 		target.Node.Kind = yaml.SequenceNode
 		target.Node.Style = lhsNode.Style
@@ -60,7 +59,7 @@ func add(d *dataTreeNavigator, context Context, lhs *CandidateNode, rhs *Candida
 		target.Node.Content = append(lhsNode.Content, toNodes(rhs)...)
 	case yaml.ScalarNode:
 		if rhs.Node.Kind != yaml.ScalarNode {
-			return nil, fmt.Errorf("%v (%v) cannot be added to a %v", rhs.Node.Tag, rhs.Path, lhsNode.Tag)
+			return nil, fmt.Errorf("%v (%v) cannot be added to a 2%v", rhs.Node.Tag, rhs.Path, lhsNode.Tag)
 		}
 		target.Node.Kind = yaml.ScalarNode
 		target.Node.Style = lhsNode.Style
@@ -76,17 +75,17 @@ func addScalars(target *CandidateNode, lhs *yaml.Node, rhs *yaml.Node) (*Candida
 		target.Node.Tag = "!!str"
 		target.Node.Value = lhs.Value + rhs.Value
 	} else if lhs.Tag == "!!int" && rhs.Tag == "!!int" {
-		lhsNum, err := strconv.Atoi(lhs.Value)
+		format, lhsNum, err := parseInt(lhs.Value)
 		if err != nil {
 			return nil, err
 		}
-		rhsNum, err := strconv.Atoi(rhs.Value)
+		_, rhsNum, err := parseInt(rhs.Value)
 		if err != nil {
 			return nil, err
 		}
 		sum := lhsNum + rhsNum
 		target.Node.Tag = "!!int"
-		target.Node.Value = fmt.Sprintf("%v", sum)
+		target.Node.Value = fmt.Sprintf(format, sum)
 	} else if (lhs.Tag == "!!int" || lhs.Tag == "!!float") && (rhs.Tag == "!!int" || rhs.Tag == "!!float") {
 		lhsNum, err := strconv.ParseFloat(lhs.Value, 64)
 		if err != nil {
